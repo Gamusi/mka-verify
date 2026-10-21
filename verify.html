@@ -317,62 +317,32 @@
 
   <script>
     const SUPABASE_URL = "https://wxhwnlvoccsgdqjexwee.supabase.co";
-    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind4aHdubHZvY2NzZ2RxamV4d2VlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDkyOTIxOTYsImV4cCI6MjA2NDg2ODE5Nn0.25eT2aN26qZ2U6R9mXn1a6_xP3j9-f0l1g2y7-e4a8w";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind4aHdubHZvY2NzZ2RxamV4d2VlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4MzQyMTEsImV4cCI6MjA4OTQxMDIxMX0.ztzuyBkMVH3RvV9r8bDXQQE9Ut4NL-0vy6_AoLVM7X4";
     const AUTH_STORAGE_KEY = "MKA_VERIFIER_AUTHORIZED_DEVICE";
     
     // Officer passcodes recognized for authorization (Sadr, National Tajneed, Qaid, Check-in Desks)
-    const VALID_PINS = ["mka1922", "tajneed2026"];
-
     let sb = null;
     if (window.supabase) {
       sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     }
 
-    function isDeviceAuthorized() {
-      return localStorage.getItem(AUTH_STORAGE_KEY) === "true";
-    }
-
-    function getParam(param) {
-      const urlParams = new URLSearchParams(window.location.search);
-      return urlParams.get(param);
-    }
-
-    async function initVerification() {
-      const memberUid = getParam('uid') || getParam('id');
-      const authRequired = !isDeviceAuthorized();
-
-      document.getElementById('loadingState').style.display = 'none';
-
-      if (authRequired) {
-        document.getElementById('deniedState').style.display = 'block';
-        document.getElementById('verifiedState').style.display = 'none';
-        return;
-      }
-
-      // If authorized, load member
-      if (!memberUid) {
-        alert('No Member Identifier passed in scan URL.');
-        return;
-      }
-      await loadMemberRecord(memberUid);
-    }
+    const VALID_PINS = ["mka1922", "tajneed2026", "1922", "2026"];
 
     async function attemptLogin() {
-      const pinInput = document.getElementById('officerPin').value.trim();
+      const pinInput = document.getElementById('officerPin').value.trim().toLowerCase();
       const err = document.getElementById('loginErr');
       
-      if (VALID_PINS.includes(pinInput) || pinInput.length >= 4) {
+      if (VALID_PINS.includes(pinInput)) {
         localStorage.setItem(AUTH_STORAGE_KEY, "true");
         err.style.display = 'none';
         document.getElementById('deniedState').style.display = 'none';
-        document.getElementById('loadingState').style.display = 'block';
         
         const memberUid = getParam('uid') || getParam('id');
         if (memberUid) {
           await loadMemberRecord(memberUid);
         } else {
           document.getElementById('loadingState').style.display = 'none';
-          alert('Device successfully authorized. Please scan an MKA ID card to verify.');
+          alert('Device successfully authorized. You can now scan any MKA ID card.');
         }
       } else {
         err.style.display = 'block';
