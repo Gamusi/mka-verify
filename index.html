@@ -9,6 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@400;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://unpkg.com/html5-qrcode"></script>
   <style>
     :root {
       --primary: #0a0a0a;
@@ -174,7 +175,7 @@
       border-radius: 8px;
       border: 1px solid rgba(255, 255, 255, 0.05);
       padding: 12px;
-      margin-bottom: 20px;
+      margin-bottom: 16px;
       text-align: left;
       font-size: 0.85rem;
     }
@@ -187,6 +188,51 @@
     .detail-row:last-child { border-bottom: none; }
     .detail-label { color: var(--text-muted); font-weight: 500; }
     .detail-val { color: #fff; font-weight: 700; text-align: right; }
+
+    /* SCAN NEXT CARD BUTTON */
+    .btn-scan-next {
+      width: 100%;
+      background: #16a34a;
+      color: #ffffff;
+      border: none;
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 0.95rem;
+      font-weight: 800;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      box-shadow: 0 4px 12px rgba(22, 163, 74, 0.3);
+    }
+    .btn-scan-next:hover { background: #15803d; }
+
+    /* IN-PAGE CAMERA SCANNER VIEW */
+    #scannerBox {
+      display: none;
+      margin-bottom: 16px;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 2px solid var(--gold);
+      background: #000;
+    }
+    #reader {
+      width: 100%;
+    }
+    .btn-close-scanner {
+      width: 100%;
+      background: #334155;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 8px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 8px;
+    }
 
     .logout-bar {
       margin-top: 16px;
@@ -238,7 +284,7 @@
       <div class="auth-form">
         <label class="form-label" for="officerPin">Officer Access Key / PIN</label>
         <div style="position:relative; margin-bottom:0;">
-          <input type="text" id="officerPin" class="pin-input"  autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" style="padding-right:44px;">
+          <input type="password" id="officerPin" class="pin-input" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" style="padding-right:44px;">
           <button type="button" id="btnToggleVis" onclick="togglePinVisibility()" style="position:absolute; right:10px; top:50%; transform:translateY(-50%); background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:1.1rem; padding:6px;">
             <i class="fas fa-eye" id="visIcon"></i>
           </button>
@@ -253,11 +299,24 @@
       </p>
     </div>
 
-    <!-- 3. AUTHORIZED MEMBER VERIFICATION RESULT -->
+    <!-- 3. IN-PAGE CAMERA SCANNER VIEW -->
+    <div id="scannerBox">
+      <div id="reader"></div>
+      <button type="button" class="btn-close-scanner" onclick="stopScanner()">
+        <i class="fas fa-times"></i> Close Camera
+      </button>
+    </div>
+
+    <!-- 4. AUTHORIZED MEMBER VERIFICATION RESULT -->
     <div id="verifiedState" style="display:none;">
       <div class="verified-badge">
         <i class="fas fa-shield-check"></i> Official MKA ID Verified
       </div>
+
+      <!-- SCAN NEXT CARD INSTANT BUTTON -->
+      <button type="button" class="btn-scan-next" onclick="startScanner()">
+        <i class="fas fa-camera"></i> Scan Next Card
+      </button>
 
       <div class="member-photo-wrap">
         <img id="mPhoto" class="member-photo" src="" alt="Member Photo">
@@ -311,15 +370,17 @@
       sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     }
 
+    let html5QrCode = null;
+
     function togglePinVisibility() {
       const pin = document.getElementById('officerPin');
       const icon = document.getElementById('visIcon');
       if (pin.type === 'text') {
         pin.type = 'password';
-        icon.className = 'fas fa-eye-slash';
+        icon.className = 'fas fa-eye';
       } else {
         pin.type = 'text';
-        icon.className = 'fas fa-eye';
+        icon.className = 'fas fa-eye-slash';
       }
     }
 
@@ -347,7 +408,8 @@
       }
 
       if (!memberUid) {
-        alert('No Member Identifier passed in scan URL.');
+        // If authorized but no member passed, open scanner immediately
+        startScanner();
         return;
       }
       await loadMemberRecord(memberUid);
@@ -366,8 +428,7 @@
         if (memberUid) {
           await loadMemberRecord(memberUid);
         } else {
-          document.getElementById('loadingState').style.display = 'none';
-          alert('Device successfully authorized. You can now scan any MKA ID card.');
+          startScanner();
         }
       } else {
         err.style.display = 'block';
@@ -375,8 +436,52 @@
     }
 
     function logoutDevice() {
+      stopScanner();
       localStorage.removeItem(AUTH_STORAGE_KEY);
       location.reload();
+    }
+
+    async function startScanner() {
+      try {
+        document.getElementById('scannerBox').style.display = 'block';
+        if (!html5QrCode) {
+          html5QrCode = new Html5Qrcode("reader");
+        }
+        await html5QrCode.start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 220, height: 220 } },
+          onScanSuccess,
+          () => {}
+        );
+      } catch (err) {
+        console.warn('Camera error:', err);
+      }
+    }
+
+    async function stopScanner() {
+      if (html5QrCode && html5QrCode.isScanning) {
+        try {
+          await html5QrCode.stop();
+        } catch(e) {}
+      }
+      document.getElementById('scannerBox').style.display = 'none';
+    }
+
+    async function onScanSuccess(decodedText) {
+      await stopScanner();
+      let uid = decodedText;
+      if (decodedText.includes('uid=')) {
+        const urlObj = new URL(decodedText);
+        uid = urlObj.searchParams.get('uid') || decodedText;
+      } else if (decodedText.includes('id=')) {
+        const urlObj = new URL(decodedText);
+        uid = urlObj.searchParams.get('id') || decodedText;
+      }
+      // Update browser URL without reloading
+      const newUrl = window.location.pathname + '?uid=' + encodeURIComponent(uid);
+      window.history.pushState({ path: newUrl }, '', newUrl);
+
+      await loadMemberRecord(uid);
     }
 
     async function loadMemberRecord(uid) {
@@ -402,7 +507,7 @@
       } catch (err) {
         document.getElementById('loadingState').style.display = 'none';
         alert('Verification Error: ' + err.message);
-        document.getElementById('deniedState').style.display = 'block';
+        document.getElementById('verifiedState').style.display = 'block';
       }
     }
 
