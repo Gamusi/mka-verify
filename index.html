@@ -56,65 +56,105 @@
       text-transform: uppercase;
     }
 
-    /* HEADER & USER BAR */
+    /* HEADER & USER BAR (MOBILE-OPTIMIZED) */
     .header-user-bar {
+      width: 100%;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 14px;
+      box-sizing: border-box;
+      text-align: left;
+    }
+    .user-bar-top {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 10px;
       width: 100%;
-      background: rgba(0, 0, 0, 0.35);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 8px 12px;
-      margin-bottom: 12px;
-      font-size: 0.75rem;
     }
     .user-info {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 7px;
       overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      max-width: 58%;
-      text-align: left;
+      min-width: 0;
+      flex: 1;
+    }
+    .user-icon {
+      color: #38bdf8;
+      font-size: 0.85rem;
+      flex-shrink: 0;
     }
     .user-email {
-      color: #90caf9;
+      color: #94a3b8;
+      font-size: 0.75rem;
       font-weight: 600;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .header-actions {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .btn-sync {
-      background: #0071BC;
-      color: #fff;
-      border: none;
+    .btn-logout {
+      background: rgba(239, 68, 68, 0.12);
+      border: 1px solid rgba(239, 68, 68, 0.28);
+      color: #fca5a5;
       border-radius: 6px;
-      padding: 6px 10px;
+      padding: 5px 10px;
       font-size: 0.72rem;
       font-weight: 700;
       cursor: pointer;
       display: inline-flex;
       align-items: center;
       gap: 5px;
+      flex-shrink: 0;
+      white-space: nowrap;
+      text-decoration: none;
+      transition: all 0.15s ease;
     }
-    .btn-sync:hover { background: #005a96; }
+    .btn-logout:hover {
+      background: rgba(239, 68, 68, 0.22);
+      color: #fff;
+    }
+    .user-bar-bottom {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      width: 100%;
+    }
+    .btn-sync {
+      background: #0284c7;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: background 0.15s ease;
+    }
+    .btn-sync:hover { background: #0369a1; }
+    .sync-badge-wrap {
+      flex: 1;
+      min-width: 0;
+      text-align: left;
+    }
     .sync-status-text {
       display: block;
-      font-size: 0.75rem;
+      font-size: 0.72rem;
       font-weight: 500;
-      color: var(--text-muted);
-      margin-top: 4px;
-      line-height: 1.3;
-      background: none;
-      border: none;
-      padding: 0;
+      color: #94a3b8;
+      line-height: 1.35;
+      word-break: break-word;
     }
     
     /* DENIED / ERROR BOX */
@@ -332,14 +372,7 @@
       margin-top: 8px;
     }
 
-    .btn-logout {
-      background: none;
-      border: none;
-      color: #90caf9;
-      cursor: pointer;
-      font-size: 0.72rem;
-      text-decoration: underline;
-    }
+
     .loading-spinner {
       font-size: 28px;
       color: var(--gold);
@@ -349,6 +382,39 @@
     @keyframes spin { 100% { transform: rotate(360deg); } }
 
     /* MOBILE SCREEN OPTIMIZATIONS */
+    @media (max-width: 480px) {
+      .header-user-bar {
+        padding: 8px 10px;
+        margin-bottom: 12px;
+      }
+      .user-email {
+        font-size: 0.72rem;
+      }
+      .btn-logout {
+        padding: 4px 8px;
+        font-size: 0.7rem;
+      }
+      .btn-sync {
+        padding: 6px 10px;
+        font-size: 0.72rem;
+      }
+      .sync-status-text {
+        font-size: 0.7rem;
+      }
+    }
+    @media (max-width: 360px) {
+      .user-bar-bottom {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+      }
+      .btn-sync {
+        width: 100%;
+      }
+      .sync-badge-wrap {
+        text-align: center;
+      }
+    }
     @media (max-width: 480px) {
       body {
         padding: 8px 6px;
@@ -414,19 +480,23 @@
 
     <!-- 0. AUTHENTICATED HEADER / USER BAR -->
     <div id="headerUserBar" class="header-user-bar" style="display:none;">
-      <div class="user-info">
-        <span><i class="fas fa-user-shield"></i></span>
-        <span id="authUserEmail" class="user-email">user@example.com</span>
+      <div class="user-bar-top">
+        <div class="user-info">
+          <i class="fas fa-user-shield user-icon"></i>
+          <span id="authUserEmail" class="user-email">user@example.com</span>
+        </div>
+        <button type="button" class="btn-logout" onclick="handleVerifierSignOut()" title="Sign Out">
+          <i class="fas fa-sign-out-alt"></i> Sign Out
+        </button>
       </div>
-      <div class="header-actions">
+      <div class="user-bar-bottom">
         <button type="button" id="btnSyncDir" class="btn-sync" onclick="syncTajneedDirectory()" title="Sync Tajneed Directory">
           <i class="fas fa-sync"></i> Sync Tajneed
         </button>
-        <button type="button" class="btn-logout" onclick="handleVerifierSignOut()" title="Sign Out">Sign Out</button>
+        <div id="syncBadgeWrap" class="sync-badge-wrap">
+          <span id="syncBadge" class="sync-status-text">No offline directory. Tap "Sync Tajneed" to cache.</span>
+        </div>
       </div>
-    </div>
-    <div id="syncBadgeWrap" style="display:none; margin-bottom:14px;">
-      <span id="syncBadge" class="sync-status-text">No Offline Directory</span>
     </div>
 
     <!-- 1. LOADING STATE -->
@@ -1234,7 +1304,7 @@
       currentUserSession = session;
       setElDisplay('loadingState', 'none');
       setElDisplay('authSection', 'none');
-      setElDisplay('headerUserBar', 'flex');
+      setElDisplay('headerUserBar', 'block');
       setElDisplay('syncBadgeWrap', 'block');
 
       const emailStr = session.user?.email || 'Authorized Officer';
