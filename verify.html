@@ -487,7 +487,10 @@
     const IDB_NAME = "mka_verifier_db_v1";
     const IDB_STORE_MEMBERS = "members";
     const IDB_STORE_META = "meta";
-    const IDB_STORE_PHOTOS = "photos";
+
+    // Dedicated Offline Photo DB (Isolated from directory DB - eliminates version locking)
+    const IDB_PHOTO_DB = "mka_verifier_offline_photos_v1";
+    const IDB_PHOTO_STORE = "photos";
 
     let sb = null;
     if (window.supabase) {
@@ -506,44 +509,59 @@
     let cachedMembersById = new Map();
     let cachedMembersByMemberId = new Map();
     let photoMemoryCache = new Map();
+    let isCachingOfflinePhotos = false;
     let syncMetaCache = null;
     let html5QrCode = null;
     let idbInstance = null;
 
-    // INDEXEDDB OFFLINE DIRECTORY ENGINE
+    // INDEXEDDB DIRECTORY ENGINE (Members + Metadata)
     function openDirectoryDB() {
       if (idbInstance) return Promise.resolve(idbInstance);
       return new Promise((resolve) => {
-        if (!window.indexedDB) {
+        if (!window.indexedDB) return resolve(null);
+        try {
+          const req = indexedDB.open(IDB_NAME, 1);
+          req.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(IDB_STORE_MEMBERS)) {
+              const store = db.createObjectStore(IDB_STORE_MEMBERS, { keyPath: "id" });
+              store.createIndex("member_id_lower", "member_id_lower", { unique: false });
+            }
+            if (!db.objectStoreNames.contains(IDB_STORE_META)) {
+              db.createObjectStore(IDB_STORE_META, { keyPath: "key" });
+            }
+          };
+          req.onsuccess = (e) => {
+            idbInstance = e.target.result;
+            resolve(idbInstance);
+          };
+          req.onerror = () => resolve(null);
+          req.onblocked = () => resolve(null);
+        } catch (e) {
           resolve(null);
-          return;
         }
-        const req = indexedDB.open(IDB_NAME, 2);
-        req.onupgradeneeded = (e) => {
-          const db = e.target.result;
-          if (!db.objectStoreNames.contains(IDB_STORE_MEMBERS)) {
-            const store = db.createObjectStore(IDB_STORE_MEMBERS, { keyPath: "id" });
-            store.createIndex("member_id_lower", "member_id_lower", { unique: false });
-          }
-          if (!db.objectStoreNames.contains(IDB_STORE_META)) {
-            db.createObjectStore(IDB_STORE_META, { keyPath: "key" });
-          }
-          if (!db.objectStoreNames.contains(IDB_STORE_PHOTOS)) {
-            db.createObjectStore(IDB_STORE_PHOTOS);
-          }
-        };
-        req.onsuccess = (e) => {
-          idbInstance = e.target.result;
-          resolve(idbInstance);
-        };
-        req.onerror = () => resolve(null);
       });
     }
 
-    // PHOTO OPTIMIZATION & OFFLINE CACHING PIPELINE
-    function getOptimizedCloudinaryUrl(url) {
-      if (!url || !url.includes('res.cloudinary.com') || url.includes('/w_')) return url;
-      return url.replace('/image/upload/', '/image/upload/w_466,q_auto,f_auto/');
+    // DEDICATED OFFLINE PHOTO DB ENGINE
+    function openPhotoDB() {
+      return new Promise((resolve) => {
+        if (!window.indexedDB) return resolve(null);
+        try {
+          const req = indexedDB.open(IDB_PHOTO_DB, 1);
+          req.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(IDB_PHOTO_STORE)) {
+              db.createObjectStore(IDB_PHOTO_STORE);
+            }
+          };
+          req.onsuccess = (e) => resolve(e.target.result);
+          req.onerror = () => resolve(null);
+          req.onblocked = () => resolve(null);
+        } catch (e) {
+          resolve(null);
+        }
+      });
     }
 
     function getStudioOfflinePhoto(id) {
@@ -572,39 +590,40 @@
             }
           };
           req.onerror = () => resolve(null);
+          req.onblocked = () => resolve(null);
         } catch (e) { resolve(null); }
       });
     }
 
-    async function getCachedPhoto(id) {
+    async function getOfflinePhoto(id) {
       if (!id) return null;
       if (photoMemoryCache.has(id)) return photoMemoryCache.get(id);
 
-      // 1. Verifier IndexedDB store
+      // 1. Verifier dedicated photo DB
       try {
-        const db = await openDirectoryDB();
-        if (db && db.objectStoreNames.contains(IDB_STORE_PHOTOS)) {
-          const dataUrl = await new Promise(res => {
+        const db = await openPhotoDB();
+        if (db) {
+          const data = await new Promise(res => {
             try {
-              const tx = db.transaction(IDB_STORE_PHOTOS, "readonly");
-              const req = tx.objectStore(IDB_STORE_PHOTOS).get(id);
+              const tx = db.transaction(IDB_PHOTO_STORE, "readonly");
+              const req = tx.objectStore(IDB_PHOTO_STORE).get(id);
               req.onsuccess = () => res(req.result || null);
               req.onerror = () => res(null);
             } catch (e) { res(null); }
           });
-          if (dataUrl) {
-            photoMemoryCache.set(id, dataUrl);
-            return dataUrl;
+          if (data) {
+            photoMemoryCache.set(id, data);
+            return data;
           }
         }
       } catch (e) {}
 
-      // 2. Opportunistic check: Studio photo store on same origin (file://)
+      // 2. Opportunistic check: Studio photo DB on same origin (file://)
       try {
         const studioPhoto = await getStudioOfflinePhoto(id);
         if (studioPhoto) {
           photoMemoryCache.set(id, studioPhoto);
-          saveCachedPhoto(id, studioPhoto);
+          saveOfflinePhoto(id, studioPhoto);
           return studioPhoto;
         }
       } catch (e) {}
@@ -612,19 +631,45 @@
       return null;
     }
 
-    async function saveCachedPhoto(id, dataUrl) {
+    async function saveOfflinePhoto(id, dataUrl) {
       if (!id || !dataUrl) return;
       photoMemoryCache.set(id, dataUrl);
       try {
-        const db = await openDirectoryDB();
-        if (db && db.objectStoreNames.contains(IDB_STORE_PHOTOS)) {
-          const tx = db.transaction(IDB_STORE_PHOTOS, "readwrite");
-          tx.objectStore(IDB_STORE_PHOTOS).put(dataUrl, id);
+        const db = await openPhotoDB();
+        if (db) {
+          const tx = db.transaction(IDB_PHOTO_STORE, "readwrite");
+          tx.objectStore(IDB_PHOTO_STORE).put(dataUrl, id);
         }
       } catch (e) {}
     }
 
-    async function displayMemberPhoto(m, isLive) {
+    async function getAllCachedPhotoKeys() {
+      try {
+        const db = await openPhotoDB();
+        if (!db) return new Set();
+        return new Promise((resolve) => {
+          try {
+            const tx = db.transaction(IDB_PHOTO_STORE, "readonly");
+            const req = tx.objectStore(IDB_PHOTO_STORE).getAllKeys();
+            req.onsuccess = () => resolve(new Set(req.result || []));
+            req.onerror = () => resolve(new Set());
+          } catch (e) {
+            resolve(new Set());
+          }
+        });
+      } catch (e) {
+        return new Set();
+      }
+    }
+
+    // PHOTO OPTIMIZATION & FAST RENDERING PIPELINE
+    function getOptimizedCloudinaryUrl(url) {
+      if (!url || typeof url !== 'string' || !url.includes('res.cloudinary.com') || url.includes('/w_')) return url;
+      return url.replace('/image/upload/', '/image/upload/w_466,q_auto,f_auto/');
+    }
+
+    // NON-BLOCKING, INSTANT PHOTO RENDERING
+    function displayMemberPhoto(m, isLive) {
       const photoEl = document.getElementById('mPhoto');
       if (!photoEl) return;
 
@@ -632,55 +677,71 @@
 
       const rawUrl = (m && m.photo_url) ? String(m.photo_url).trim() : '';
 
-      // 1. No photo on file
+      // 1. No photo recorded in database
       if (!rawUrl) {
         photoEl.src = placeholderSvg;
         photoEl.title = 'No photo on file';
         return;
       }
 
-      // 2. Data URI: render immediately and cache
+      // 2. Data URI: display immediately and cache
       if (rawUrl.startsWith('data:image/')) {
         photoEl.src = rawUrl;
         photoEl.title = 'Member Photo (Base64)';
-        if (m.id) saveCachedPhoto(m.id, rawUrl);
+        if (m.id) saveOfflinePhoto(m.id, rawUrl);
         return;
       }
 
-      // 3. Local IndexedDB Cache: 0ms instant offline photo!
-      const cached = await getCachedPhoto(m.id);
-      if (cached) {
-        photoEl.src = cached;
-        photoEl.title = 'Member Photo (Offline Cached)';
+      // 3. Instant synchronous memory cache hit
+      if (photoMemoryCache.has(m.id)) {
+        photoEl.src = photoMemoryCache.get(m.id);
+        photoEl.title = 'Member Photo (Cached)';
         return;
       }
 
-      // 4. Online optimized fetch (~18KB instead of 3MB)
+      // 4. Set fast optimized URL IMMEDIATELY on line 1 (no await, no blocking!)
       const fastUrl = getOptimizedCloudinaryUrl(rawUrl);
       photoEl.referrerPolicy = 'no-referrer';
-      photoEl.onerror = () => {
-        photoEl.src = placeholderSvg;
-        photoEl.title = isLive ? 'Photo unavailable' : 'Remote photo cannot load offline';
-      };
-      photoEl.src = fastUrl;
       photoEl.title = 'Member Photo';
 
-      // 5. In background, convert to Data URL and cache into IndexedDB for offline reuse
-      try {
+      // Fallback handler: if remote image fails, check offline DB before falling back to placeholder
+      photoEl.onerror = () => {
+        getOfflinePhoto(m.id).then(offlineData => {
+          if (offlineData) {
+            photoEl.src = offlineData;
+            photoEl.title = 'Member Photo (Offline DB)';
+          } else {
+            photoEl.src = placeholderSvg;
+            photoEl.title = isLive ? 'Photo unavailable' : 'Remote photo cannot load offline';
+          }
+        });
+      };
+
+      // Asynchronously check IndexedDB: if an offline data URL exists, swap it in smoothly
+      getOfflinePhoto(m.id).then(offlineData => {
+        if (offlineData && photoEl.src !== offlineData) {
+          photoEl.src = offlineData;
+          photoEl.title = 'Member Photo (Offline Cached)';
+        }
+      });
+
+      // Start browser network fetch immediately
+      photoEl.src = fastUrl;
+
+      // On successful image load, if online and not yet in offline store, persist to IndexedDB
+      if (navigator.onLine && m.id) {
         fetch(fastUrl, { mode: 'cors', referrerPolicy: 'no-referrer' })
           .then(resp => resp.ok ? resp.blob() : null)
           .then(blob => {
             if (!blob) return;
             const reader = new FileReader();
             reader.onloadend = () => {
-              if (reader.result && m.id) {
-                saveCachedPhoto(m.id, reader.result);
-              }
+              if (reader.result) saveOfflinePhoto(m.id, reader.result);
             };
             reader.readAsDataURL(blob);
           })
           .catch(() => {});
-      } catch (e) {}
+      }
     }
 
     function setMemoryDirectory(members) {
@@ -1090,7 +1151,8 @@
       if (meta && meta.count && meta.count > 0) {
         const d = new Date(meta.syncedAt);
         const dateStr = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-        badge.textContent = `Directory: ${meta.count} members cached (${dateStr})`;
+        const photoStr = (typeof meta.photosCount === 'number') ? ` (${meta.photosCount} photos offline)` : '';
+        badge.textContent = `Directory: ${meta.count} members${photoStr} [${dateStr}]`;
         badge.style.background = 'rgba(22, 163, 74, 0.15)';
         badge.style.borderColor = 'rgba(22, 163, 74, 0.4)';
         badge.style.color = '#86efac';
@@ -1178,12 +1240,67 @@
           };
         });
 
-        // Atomic commit to IndexedDB
-        const syncMeta = { count: cleanMembers.length, syncedAt: Date.now() };
+        // 1. Download & cache all member photos offline into IndexedDB
+        const membersWithPhotos = cleanMembers.filter(m => m.photo_url && (m.photo_url.startsWith('http') || m.photo_url.startsWith('data:image/')));
+        let cachedPhotosCount = 0;
+
+        if (membersWithPhotos.length > 0) {
+          const existingKeys = await getAllCachedPhotoKeys();
+          const missingPhotos = membersWithPhotos.filter(m => !existingKeys.has(m.id));
+          cachedPhotosCount = existingKeys.size;
+
+          // Cache Data URIs directly
+          for (const m of membersWithPhotos) {
+            if (m.photo_url.startsWith('data:image/') && !existingKeys.has(m.id)) {
+              await saveOfflinePhoto(m.id, m.photo_url);
+              existingKeys.add(m.id);
+              cachedPhotosCount++;
+            }
+          }
+
+          if (missingPhotos.length > 0 && navigator.onLine) {
+            let done = 0;
+            const totalMissing = missingPhotos.length;
+            const concurrency = 6;
+
+            for (let i = 0; i < missingPhotos.length; i += concurrency) {
+              if (!navigator.onLine) break;
+              const chunk = missingPhotos.slice(i, i + concurrency);
+              if (btn) {
+                btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Photos (${done}/${totalMissing})...`;
+              }
+              await Promise.all(chunk.map(async (m) => {
+                try {
+                  const fastUrl = getOptimizedCloudinaryUrl(m.photo_url);
+                  const resp = await fetch(fastUrl, { mode: 'cors', referrerPolicy: 'no-referrer' });
+                  if (!resp.ok) return;
+                  const blob = await resp.blob();
+                  const dataUrl = await new Promise(res => {
+                    const r = new FileReader();
+                    r.onloadend = () => res(r.result);
+                    r.readAsDataURL(blob);
+                  });
+                  if (dataUrl) {
+                    await saveOfflinePhoto(m.id, dataUrl);
+                    cachedPhotosCount++;
+                  }
+                } catch (e) {}
+              }));
+              done += chunk.length;
+            }
+          }
+        }
+
+        // 2. Commit directory and metadata to IndexedDB
+        const syncMeta = {
+          count: cleanMembers.length,
+          photosCount: cachedPhotosCount,
+          syncedAt: Date.now()
+        };
         await saveDirectoryToIDB(cleanMembers, syncMeta);
         updateSyncDisplay(syncMeta);
 
-        alert(`Sync Complete: ${cleanMembers.length} member records cached in IndexedDB for offline verification.`);
+        alert(`Sync Complete:\n\n• ${cleanMembers.length} member records saved for offline verification.\n• ${cachedPhotosCount} photos cached offline.`);
       } catch (err) {
         console.error('Directory sync failed:', err);
         alert('Sync Failed: ' + (err.message || 'Network error') + '\n\nYour existing offline directory cache was preserved.');
