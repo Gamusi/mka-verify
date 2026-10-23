@@ -433,7 +433,7 @@
       </button>
 
       <div class="member-photo-wrap">
-        <img id="mPhoto" class="member-photo" src="" alt="Member Photo">
+        <img id="mPhoto" class="member-photo" src="" alt="Member Photo" referrerpolicy="no-referrer" loading="eager">
       </div>
 
       <h2 id="mName" class="member-name">—</h2>
@@ -487,6 +487,7 @@
     const IDB_NAME = "mka_verifier_db_v1";
     const IDB_STORE_MEMBERS = "members";
     const IDB_STORE_META = "meta";
+    const IDB_STORE_PHOTOS = "photos";
 
     let sb = null;
     if (window.supabase) {
@@ -504,6 +505,7 @@
     let cachedMembers = [];
     let cachedMembersById = new Map();
     let cachedMembersByMemberId = new Map();
+    let photoMemoryCache = new Map();
     let syncMetaCache = null;
     let html5QrCode = null;
     let idbInstance = null;
@@ -516,7 +518,7 @@
           resolve(null);
           return;
         }
-        const req = indexedDB.open(IDB_NAME, 1);
+        const req = indexedDB.open(IDB_NAME, 2);
         req.onupgradeneeded = (e) => {
           const db = e.target.result;
           if (!db.objectStoreNames.contains(IDB_STORE_MEMBERS)) {
@@ -526,6 +528,9 @@
           if (!db.objectStoreNames.contains(IDB_STORE_META)) {
             db.createObjectStore(IDB_STORE_META, { keyPath: "key" });
           }
+          if (!db.objectStoreNames.contains(IDB_STORE_PHOTOS)) {
+            db.createObjectStore(IDB_STORE_PHOTOS);
+          }
         };
         req.onsuccess = (e) => {
           idbInstance = e.target.result;
@@ -533,6 +538,149 @@
         };
         req.onerror = () => resolve(null);
       });
+    }
+
+    // PHOTO OPTIMIZATION & OFFLINE CACHING PIPELINE
+    function getOptimizedCloudinaryUrl(url) {
+      if (!url || !url.includes('res.cloudinary.com') || url.includes('/w_')) return url;
+      return url.replace('/image/upload/', '/image/upload/w_466,q_auto,f_auto/');
+    }
+
+    function getStudioOfflinePhoto(id) {
+      return new Promise((resolve) => {
+        try {
+          if (!window.indexedDB || !id) return resolve(null);
+          const req = indexedDB.open("mka_id_studio_offline_photos_v1");
+          req.onsuccess = (e) => {
+            const db = e.target.result;
+            if (!db || !db.objectStoreNames.contains("photos")) {
+              if (db) db.close();
+              return resolve(null);
+            }
+            try {
+              const tx = db.transaction("photos", "readonly");
+              const getReq = tx.objectStore("photos").get(id);
+              getReq.onsuccess = () => {
+                const res = getReq.result || null;
+                db.close();
+                resolve(res);
+              };
+              getReq.onerror = () => { db.close(); resolve(null); };
+            } catch (err) {
+              if (db) db.close();
+              resolve(null);
+            }
+          };
+          req.onerror = () => resolve(null);
+        } catch (e) { resolve(null); }
+      });
+    }
+
+    async function getCachedPhoto(id) {
+      if (!id) return null;
+      if (photoMemoryCache.has(id)) return photoMemoryCache.get(id);
+
+      // 1. Verifier IndexedDB store
+      try {
+        const db = await openDirectoryDB();
+        if (db && db.objectStoreNames.contains(IDB_STORE_PHOTOS)) {
+          const dataUrl = await new Promise(res => {
+            try {
+              const tx = db.transaction(IDB_STORE_PHOTOS, "readonly");
+              const req = tx.objectStore(IDB_STORE_PHOTOS).get(id);
+              req.onsuccess = () => res(req.result || null);
+              req.onerror = () => res(null);
+            } catch (e) { res(null); }
+          });
+          if (dataUrl) {
+            photoMemoryCache.set(id, dataUrl);
+            return dataUrl;
+          }
+        }
+      } catch (e) {}
+
+      // 2. Opportunistic check: Studio photo store on same origin (file://)
+      try {
+        const studioPhoto = await getStudioOfflinePhoto(id);
+        if (studioPhoto) {
+          photoMemoryCache.set(id, studioPhoto);
+          saveCachedPhoto(id, studioPhoto);
+          return studioPhoto;
+        }
+      } catch (e) {}
+
+      return null;
+    }
+
+    async function saveCachedPhoto(id, dataUrl) {
+      if (!id || !dataUrl) return;
+      photoMemoryCache.set(id, dataUrl);
+      try {
+        const db = await openDirectoryDB();
+        if (db && db.objectStoreNames.contains(IDB_STORE_PHOTOS)) {
+          const tx = db.transaction(IDB_STORE_PHOTOS, "readwrite");
+          tx.objectStore(IDB_STORE_PHOTOS).put(dataUrl, id);
+        }
+      } catch (e) {}
+    }
+
+    async function displayMemberPhoto(m, isLive) {
+      const photoEl = document.getElementById('mPhoto');
+      if (!photoEl) return;
+
+      const placeholderSvg = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 24 24' fill='%23666'><path d='M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z'/></svg>";
+
+      const rawUrl = (m && m.photo_url) ? String(m.photo_url).trim() : '';
+
+      // 1. No photo on file
+      if (!rawUrl) {
+        photoEl.src = placeholderSvg;
+        photoEl.title = 'No photo on file';
+        return;
+      }
+
+      // 2. Data URI: render immediately and cache
+      if (rawUrl.startsWith('data:image/')) {
+        photoEl.src = rawUrl;
+        photoEl.title = 'Member Photo (Base64)';
+        if (m.id) saveCachedPhoto(m.id, rawUrl);
+        return;
+      }
+
+      // 3. Local IndexedDB Cache: 0ms instant offline photo!
+      const cached = await getCachedPhoto(m.id);
+      if (cached) {
+        photoEl.src = cached;
+        photoEl.title = 'Member Photo (Offline Cached)';
+        return;
+      }
+
+      // 4. Online optimized fetch (~18KB instead of 3MB)
+      const fastUrl = getOptimizedCloudinaryUrl(rawUrl);
+      photoEl.referrerPolicy = 'no-referrer';
+      photoEl.onerror = () => {
+        photoEl.src = placeholderSvg;
+        photoEl.title = isLive ? 'Photo unavailable' : 'Remote photo cannot load offline';
+      };
+      photoEl.src = fastUrl;
+      photoEl.title = 'Member Photo';
+
+      // 5. In background, convert to Data URL and cache into IndexedDB for offline reuse
+      try {
+        fetch(fastUrl, { mode: 'cors', referrerPolicy: 'no-referrer' })
+          .then(resp => resp.ok ? resp.blob() : null)
+          .then(blob => {
+            if (!blob) return;
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              if (reader.result && m.id) {
+                saveCachedPhoto(m.id, reader.result);
+              }
+            };
+            reader.readAsDataURL(blob);
+          })
+          .catch(() => {});
+      } catch (e) {}
     }
 
     function setMemoryDirectory(members) {
@@ -1007,7 +1155,7 @@
 
         const cleanMembers = fetched.map(m => {
           const cleanRegion = (m.region ? m.region.replace(/\s+Region$/i, '').trim() : '') || regionMap[m.region_id] || 'Unspecified';
-          const cleanPhotoUrl = (m.photo_url && m.photo_url.startsWith('http')) ? m.photo_url.trim() : '';
+          const cleanPhotoUrl = (m.photo_url && (m.photo_url.startsWith('http') || m.photo_url.startsWith('data:image/'))) ? m.photo_url.trim() : '';
           const rawDept = (m.department || '').trim();
           const cleanDept = (rawDept && rawDept !== 'Select Office' && rawDept !== '-') ? rawDept : '';
           const rawPos = (m.position && m.position !== '-') ? m.position.trim() : '';
@@ -1154,6 +1302,19 @@
 
       const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanUid);
 
+      // FAST PATH: Instant local display if member is cached (0ms UI!)
+      const cached = findCachedMember(cleanUid);
+      if (cached) {
+        renderMember(cached, false);
+
+        // Quiet background revalidation if online
+        if (navigator.onLine && sb) {
+          revalidateMemberInBackground(cleanUid, isUuid);
+        }
+        return;
+      }
+
+      // SLOW PATH: Not in local cache, show loader and query Supabase
       document.getElementById('loadingState').style.display = 'block';
       document.getElementById('loadingText').textContent = 'Looking up member credentials...';
       document.getElementById('verifiedState').style.display = 'none';
@@ -1187,13 +1348,8 @@
             }
           }
         } catch (err) {
-          console.warn('Live lookup failed, attempting cache fallback:', err);
+          console.warn('Live lookup failed:', err);
         }
-      }
-
-      // 2. Offline / cache fallback
-      if (!member) {
-        member = findCachedMember(cleanUid);
       }
 
       document.getElementById('loadingState').style.display = 'none';
@@ -1216,6 +1372,33 @@
       renderMember(member, isLive);
     }
 
+    async function revalidateMemberInBackground(cleanUid, isUuid) {
+      try {
+        let query = sb.from('members')
+          .select('id, member_id, full_name, position, department, region, sub_region, dob, age_group, organization_id, calculated_org_type, gender, photo_url, status, phone');
+        if (isUuid) {
+          query = query.eq('id', cleanUid);
+        } else {
+          query = query.ilike('member_id', cleanUid);
+        }
+        const { data, error } = await query.maybeSingle();
+        if (!error && data) {
+          const badgeSource = document.getElementById('mSource');
+          if (badgeSource) {
+            badgeSource.textContent = 'ONLINE SUPABASE CONFIRMED';
+            badgeSource.style.color = '#86efac';
+          }
+          const badgeEl = document.getElementById('mBadge');
+          if (badgeEl && !badgeEl.className.includes('badge-expired') && !badgeEl.className.includes('badge-unsupported')) {
+            badgeEl.className = 'verified-badge badge-live';
+          }
+          if (data.photo_url) {
+            displayMemberPhoto(data, true);
+          }
+        }
+      } catch (e) {}
+    }
+
     function showErrorState(title, message) {
       setElDisplay('loadingState', 'none');
       setElDisplay('verifiedState', 'none');
@@ -1234,20 +1417,8 @@
       setElText('mName', m.full_name || '—');
       setElText('mId', m.member_id || 'ID PENDING');
 
-      // Remote photo handling with graceful offline fallback
-      const photoEl = document.getElementById('mPhoto');
-      const placeholderSvg = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 24 24' fill='%23666'><path d='M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z'/></svg>";
-      if (photoEl) {
-        photoEl.onerror = () => {
-          photoEl.src = placeholderSvg;
-          photoEl.title = isLive ? 'Photo unavailable' : 'Remote photo cannot load offline';
-        };
-        if (m.photo_url && m.photo_url.startsWith('http')) {
-          photoEl.src = m.photo_url;
-        } else {
-          photoEl.src = placeholderSvg;
-        }
-      }
+      // Fast, resilient photo rendering with 0ms offline IndexedDB caching
+      displayMemberPhoto(m, isLive);
 
       // Domain Engine Calculations
       const category = getAssignedCategory(m);
