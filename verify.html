@@ -522,7 +522,7 @@
           <span class="detail-val" id="mStatus">Active</span>
         </div>
         <div class="detail-row">
-          <span class="detail-label">Office / Responsibility</span>
+          <span class="detail-label">Responsibility</span>
           <span class="detail-val" id="mOffice">—</span>
         </div>
         <div class="detail-row">
@@ -1773,7 +1773,7 @@
         statusEl.style.color = isStatusActive ? '#81c784' : '#f87171';
       }
 
-      // Office / Responsibility
+      // Responsibility
       let office = category === 'ATFAL' ? 'Atfal Member' : 'Khuddam Member';
       if (m.department && m.department !== 'Select Office' && m.department !== '-') {
         office = m.department;
@@ -1802,7 +1802,7 @@
       } else if (!birthYear && !isOffice) {
         expiryLabel = 'MISSING DOB (CANNOT CALCULATE)';
       } else if (autoYear) {
-        expiryLabel = `DEC ${autoYear}${isExpired ? ' (EXPIRED)' : ''}`;
+        expiryLabel = `${autoYear}${isExpired ? ' (EXPIRED)' : ''}`;
       }
       const expEl = document.getElementById('mExpiry');
       if (expEl) {
