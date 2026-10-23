@@ -105,13 +105,16 @@
       gap: 5px;
     }
     .btn-sync:hover { background: #005a96; }
-    .sync-badge {
-      display: inline-block;
-      font-size: 0.72rem;
-      font-weight: 600;
-      padding: 4px 10px;
-      border-radius: 12px;
-      border: 1px solid var(--border);
+    .sync-status-text {
+      display: block;
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-top: 4px;
+      line-height: 1.3;
+      background: none;
+      border: none;
+      padding: 0;
     }
     
     /* DENIED / ERROR BOX */
@@ -187,44 +190,55 @@
       line-height: 1.4;
     }
 
-    /* VERIFIED MEMBER CARD */
+    /* CUSTOM VERIFIED BADGE (MINIMAL, NO PILL TAG) */
     .verified-badge {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      font-size: 0.8rem;
-      font-weight: 700;
-      padding: 6px 14px;
-      border-radius: 30px;
-      margin-bottom: 16px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+      justify-content: center;
+      gap: 7px;
+      margin-bottom: 12px;
+      background: none;
+      border: none;
+      padding: 0;
     }
-    .badge-live {
-      background: rgba(46, 125, 50, 0.18);
-      border: 1px solid rgba(46, 125, 50, 0.45);
-      color: #81c784;
+    .custom-badge-icon {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: 900;
+      flex-shrink: 0;
     }
-    .badge-cached {
-      background: rgba(2, 132, 199, 0.18);
-      border: 1px solid rgba(2, 132, 199, 0.45);
-      color: #38bdf8;
+    .custom-badge-icon.verified {
+      background: #16a34a;
+      color: #ffffff;
+      box-shadow: 0 0 8px rgba(22, 163, 74, 0.4);
     }
-    .badge-expired {
-      background: rgba(229, 57, 53, 0.18);
-      border: 1px solid rgba(229, 57, 53, 0.45);
-      color: #f87171;
+    .custom-badge-icon.verified-offline {
+      background: #0284c7;
+      color: #ffffff;
+      box-shadow: 0 0 8px rgba(2, 132, 199, 0.4);
     }
-    .badge-unsupported {
-      background: rgba(100, 116, 139, 0.18);
-      border: 1px solid rgba(100, 116, 139, 0.45);
-      color: #cbd5e1;
+    .custom-badge-icon.warning {
+      background: #d97706;
+      color: #ffffff;
     }
-    .badge-warning {
-      background: rgba(217, 119, 6, 0.18);
-      border: 1px solid rgba(217, 119, 6, 0.45);
-      color: #fbbf24;
+    .custom-badge-icon.danger {
+      background: #dc2626;
+      color: #ffffff;
     }
+    .verified-label {
+      font-size: 0.95rem;
+      font-weight: 800;
+      letter-spacing: 0.3px;
+      color: #4ade80;
+    }
+    .verified-label.offline { color: #38bdf8; }
+    .verified-label.warning { color: #fde047; }
+    .verified-label.danger { color: #f87171; }
 
     .member-photo-wrap {
       width: 120px;
@@ -333,6 +347,61 @@
       margin: 20px 0;
     }
     @keyframes spin { 100% { transform: rotate(360deg); } }
+
+    /* MOBILE SCREEN OPTIMIZATIONS */
+    @media (max-width: 480px) {
+      body {
+        padding: 8px 6px;
+      }
+      .container {
+        padding: 16px 14px;
+        border-radius: 12px;
+        max-width: 100%;
+      }
+      h1 {
+        font-size: 1.15rem;
+        margin-bottom: 8px;
+      }
+      .member-photo-wrap {
+        width: 100px;
+        height: 120px;
+        margin-bottom: 10px;
+      }
+      .member-name {
+        font-size: 1.18rem;
+      }
+      .member-id {
+        font-size: 0.82rem;
+        margin-bottom: 8px;
+      }
+      .verified-badge {
+        margin-bottom: 10px;
+      }
+      .details-grid {
+        padding: 10px 12px;
+        font-size: 0.82rem;
+        margin-bottom: 12px;
+      }
+      .detail-row {
+        padding: 4px 0;
+      }
+      .btn-scan-next {
+        padding: 12px;
+        font-size: 0.95rem;
+        margin-bottom: 12px;
+      }
+      .header-user-bar {
+        padding: 6px 10px;
+        margin-bottom: 8px;
+      }
+      .user-info {
+        font-size: 0.72rem;
+      }
+      .btn-sync, .btn-logout {
+        padding: 5px 8px;
+        font-size: 0.7rem;
+      }
+    }
   </style>
 </head>
 <body>
@@ -357,7 +426,7 @@
       </div>
     </div>
     <div id="syncBadgeWrap" style="display:none; margin-bottom:14px;">
-      <span id="syncBadge" class="sync-badge">No Offline Directory</span>
+      <span id="syncBadge" class="sync-status-text">No Offline Directory</span>
     </div>
 
     <!-- 1. LOADING STATE -->
@@ -445,12 +514,12 @@
           <span class="detail-val" id="mAux">—</span>
         </div>
         <div class="detail-row">
-          <span class="detail-label">Verification Source</span>
+          <span class="detail-label">Verification Mode</span>
           <span class="detail-val" id="mSource">—</span>
         </div>
         <div class="detail-row">
           <span class="detail-label">Status</span>
-          <span class="detail-val" id="mStatus">ACTIVE / VERIFIED</span>
+          <span class="detail-val" id="mStatus">Active</span>
         </div>
         <div class="detail-row">
           <span class="detail-label">Office / Responsibility</span>
@@ -1207,27 +1276,25 @@
       const badge = document.getElementById('syncBadge');
       if (!badge) return;
       const meta = metaOverride || syncMetaCache;
+      badge.className = 'sync-status-text';
+      badge.style.background = 'none';
+      badge.style.border = 'none';
+      badge.style.padding = '0';
       if (meta && meta.count && meta.count > 0) {
         const d = new Date(meta.syncedAt);
         const dateStr = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
         const totalPhotos = (typeof meta.membersWithPhotosCount === 'number') ? meta.membersWithPhotosCount : '?';
         const photoStr = (typeof meta.photosCount === 'number')
-          ? ` (${meta.photosCount}/${totalPhotos} photos cached)`
+          ? ` (${meta.photosCount}/${totalPhotos} photos)`
           : '';
-        badge.textContent = `Directory: ${meta.count} members${photoStr} [${dateStr}]`;
-        badge.style.background = 'rgba(22, 163, 74, 0.15)';
-        badge.style.borderColor = 'rgba(22, 163, 74, 0.4)';
-        badge.style.color = '#86efac';
+        badge.innerHTML = `<i class="fas fa-database"></i> ${meta.count} members ready offline${photoStr} &bull; ${dateStr}`;
+        badge.style.color = '#94a3b8';
       } else if (cachedMembers && cachedMembers.length > 0) {
-        badge.textContent = `Directory: ${cachedMembers.length} members cached`;
-        badge.style.background = 'rgba(22, 163, 74, 0.15)';
-        badge.style.borderColor = 'rgba(22, 163, 74, 0.4)';
-        badge.style.color = '#86efac';
+        badge.innerHTML = `<i class="fas fa-database"></i> ${cachedMembers.length} members ready offline`;
+        badge.style.color = '#94a3b8';
       } else {
-        badge.textContent = `No Offline Directory (Sync Required)`;
-        badge.style.background = 'rgba(217, 119, 6, 0.15)';
-        badge.style.borderColor = 'rgba(217, 119, 6, 0.4)';
-        badge.style.color = '#fde047';
+        badge.innerHTML = `<i class="fas fa-info-circle"></i> No offline directory. Tap "Sync Tajneed" to cache.`;
+        badge.style.color = '#f59e0b';
       }
     }
     // TWO-PHASE RESUMABLE DIRECTORY & PHOTO SYNCHRONIZATION (Option B)
@@ -1677,25 +1744,23 @@
 
       const isExpired = autoYear ? MKA_DomainEngine.isCardExpired(autoYear) : false;
 
-      // Auxiliary label
+      // Auxiliary label (short: Khuddam or Atfal)
       let auxText = '—';
       if (category === 'ATFAL') {
-        auxText = 'Majlis Atfal-ul-Ahmadiyya';
+        auxText = 'Atfal';
       } else if (category === 'KHUDDAM') {
-        auxText = 'Majlis Khuddamul Ahmadiyya';
+        auxText = 'Khuddam';
       } else {
         auxText = `Unsupported (${m.age_group || m.calculated_org_type || 'Non-MKA'})`;
       }
       setElText('mAux', auxText);
 
-      // Verification Source
+      // Verification Mode (Online for live Supabase, Offline for cached data)
       let sourceHtml = '';
       if (isLive) {
-        sourceHtml = '<span style="color:#81c784; font-weight:700;"><i class="fas fa-signal"></i> Live Supabase Confirmation</span>';
+        sourceHtml = '<span style="color:#81c784; font-weight:700;">Online</span>';
       } else {
-        const meta = syncMetaCache;
-        const syncTimeStr = meta && meta.syncedAt ? new Date(meta.syncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-        sourceHtml = `<span style="color:#38bdf8; font-weight:700;"><i class="fas fa-database"></i> Cached Directory Match ${syncTimeStr ? '(' + syncTimeStr + ')' : ''}</span>`;
+        sourceHtml = '<span style="color:#38bdf8; font-weight:700;">Offline</span>';
       }
       setElHtml('mSource', sourceHtml);
 
@@ -1704,13 +1769,8 @@
       const isStatusActive = rawStatus.toLowerCase() === 'active' || rawStatus.toLowerCase() === 'verified';
       const statusEl = document.getElementById('mStatus');
       if (statusEl) {
-        if (isLive) {
-          statusEl.textContent = isStatusActive ? 'ACTIVE (Online Confirmed)' : `${rawStatus.toUpperCase()} (Online)`;
-          statusEl.style.color = isStatusActive ? '#81c784' : '#f87171';
-        } else {
-          statusEl.textContent = isStatusActive ? 'ACTIVE (Cached Record - Not Confirmed Online)' : `${rawStatus.toUpperCase()} (Cached)`;
-          statusEl.style.color = isStatusActive ? '#38bdf8' : '#f87171';
-        }
+        statusEl.textContent = isStatusActive ? 'Active' : rawStatus.toUpperCase();
+        statusEl.style.color = isStatusActive ? '#81c784' : '#f87171';
       }
 
       // Office / Responsibility
@@ -1750,27 +1810,22 @@
         expEl.style.color = (isExpired || expiryLabel.includes('MISSING')) ? '#f87171' : '#ffffff';
       }
 
-      // Verification Badge
+      // Custom Verified Badge (Minimal, No Pill Tag)
       const badgeEl = document.getElementById('mBadge');
       if (badgeEl) {
+        badgeEl.className = 'verified-badge';
         if (category === 'UNSUPPORTED') {
-          badgeEl.className = 'verified-badge badge-unsupported';
-          badgeEl.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Outside MKA Scope (Unsupported Category)';
+          badgeEl.innerHTML = '<span class="custom-badge-icon warning"><i class="fas fa-exclamation"></i></span> <span class="verified-label warning">Non-MKA Scope</span>';
         } else if (!birthYear && !isOffice) {
-          badgeEl.className = 'verified-badge badge-warning';
-          badgeEl.innerHTML = '<i class="fas fa-exclamation-circle"></i> Incomplete Record (Missing DOB)';
+          badgeEl.innerHTML = '<span class="custom-badge-icon warning"><i class="fas fa-exclamation"></i></span> <span class="verified-label warning">Incomplete Record</span>';
         } else if (!isStatusActive) {
-          badgeEl.className = 'verified-badge badge-expired';
-          badgeEl.innerHTML = `<i class="fas fa-user-slash"></i> Membership Inactive (${rawStatus})`;
+          badgeEl.innerHTML = `<span class="custom-badge-icon danger"><i class="fas fa-user-slash"></i></span> <span class="verified-label danger">Inactive (${rawStatus})</span>`;
         } else if (isExpired) {
-          badgeEl.className = 'verified-badge badge-expired';
-          badgeEl.innerHTML = `<i class="fas fa-calendar-times"></i> Card Expired (${expiryLabel})`;
+          badgeEl.innerHTML = `<span class="custom-badge-icon danger"><i class="fas fa-times"></i></span> <span class="verified-label danger">Card Expired</span>`;
         } else if (isLive) {
-          badgeEl.className = 'verified-badge badge-live';
-          badgeEl.innerHTML = '<i class="fas fa-shield-check"></i> Official MKA ID Verified (Online)';
+          badgeEl.innerHTML = '<span class="custom-badge-icon verified"><i class="fas fa-check"></i></span> <span class="verified-label">Verified</span>';
         } else {
-          badgeEl.className = 'verified-badge badge-cached';
-          badgeEl.innerHTML = '<i class="fas fa-shield-alt"></i> Official MKA ID (Offline Directory Match)';
+          badgeEl.innerHTML = '<span class="custom-badge-icon verified-offline"><i class="fas fa-check"></i></span> <span class="verified-label offline">Verified</span>';
         }
       }
     }
