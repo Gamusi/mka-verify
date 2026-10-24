@@ -673,6 +673,10 @@
     let syncMetaCache = null;
     let html5QrCode = null;
     let idbInstance = null;
+    let photoDbInstance = null;
+    let photoDbPromise = null;
+    let currentRenderedPhotoMemberId = null;
+    let currentPhotoRenderSeq = 0;
 
     // INDEXEDDB DIRECTORY ENGINE (Members + Metadata)
     function openDirectoryDB() {
@@ -703,10 +707,15 @@
       });
     }
 
-    // DEDICATED OFFLINE PHOTO DB ENGINE
+    // DEDICATED OFFLINE PHOTO DB ENGINE (Connection Reused & Safe on Version Change)
     function openPhotoDB() {
-      return new Promise((resolve) => {
-        if (!window.indexedDB) return resolve(null);
+      if (photoDbInstance) return Promise.resolve(photoDbInstance);
+      if (photoDbPromise) return photoDbPromise;
+      photoDbPromise = new Promise((resolve) => {
+        if (!window.indexedDB) {
+          photoDbPromise = null;
+          return resolve(null);
+        }
         try {
           const req = indexedDB.open(IDB_PHOTO_DB, 1);
           req.onupgradeneeded = (e) => {
@@ -715,13 +724,36 @@
               db.createObjectStore(IDB_PHOTO_STORE);
             }
           };
-          req.onsuccess = (e) => resolve(e.target.result);
-          req.onerror = () => resolve(null);
-          req.onblocked = () => resolve(null);
+          req.onsuccess = (e) => {
+            photoDbInstance = e.target.result;
+            photoDbPromise = null;
+            photoDbInstance.onversionchange = () => {
+              try { photoDbInstance.close(); } catch (err) {}
+              photoDbInstance = null;
+              photoDbPromise = null;
+            };
+            photoDbInstance.onclose = () => {
+              photoDbInstance = null;
+              photoDbPromise = null;
+            };
+            resolve(photoDbInstance);
+          };
+          req.onerror = () => {
+            photoDbInstance = null;
+            photoDbPromise = null;
+            resolve(null);
+          };
+          req.onblocked = () => {
+            photoDbPromise = null;
+            resolve(null);
+          };
         } catch (e) {
+          photoDbInstance = null;
+          photoDbPromise = null;
           resolve(null);
         }
       });
+      return photoDbPromise;
     }
 
     function getStudioOfflinePhoto(id) {
@@ -791,16 +823,26 @@
       return null;
     }
 
-    async function saveOfflinePhoto(id, dataUrl) {
-      if (!id || !dataUrl) return;
-      photoMemoryCache.set(id, dataUrl);
-      try {
-        const db = await openPhotoDB();
-        if (db) {
+    function saveOfflinePhoto(id, dataUrl, skipMemoryCache = false) {
+      if (!id || !dataUrl) return Promise.resolve(false);
+      if (!skipMemoryCache) {
+        photoMemoryCache.set(id, dataUrl);
+      }
+      return new Promise(async (resolve, reject) => {
+        try {
+          const db = await openPhotoDB();
+          if (!db) return resolve(false);
           const tx = db.transaction(IDB_PHOTO_STORE, "readwrite");
-          tx.objectStore(IDB_PHOTO_STORE).put(dataUrl, id);
+          const req = tx.objectStore(IDB_PHOTO_STORE).put(dataUrl, id);
+
+          tx.oncomplete = () => resolve(true);
+          tx.onerror = () => reject(tx.error || new Error('Photo transaction error'));
+          tx.onabort = () => reject(tx.error || new Error('Photo transaction aborted'));
+          req.onerror = () => reject(req.error || new Error('Photo put error'));
+        } catch (err) {
+          reject(err);
         }
-      } catch (e) {}
+      });
     }
 
     async function getAllCachedPhotoKeys() {
@@ -832,19 +874,31 @@
       const photoEl = document.getElementById('mPhoto');
       if (!photoEl) return;
 
+      const targetMemberId = m && (m.id || m.member_id) ? String(m.id || m.member_id) : '';
+      currentRenderedPhotoMemberId = targetMemberId;
+      const renderSeq = ++currentPhotoRenderSeq;
+
+      // Immediately clear handlers so placeholder assignment never re-triggers onload/onerror
+      photoEl.onload = null;
+      photoEl.onerror = null;
+
       const placeholderSvg = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 24 24' fill='%23666'><path d='M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z'/></svg>";
+
+      // Immediately replace previous photo with placeholder synchronously
+      photoEl.src = placeholderSvg;
+      photoEl.title = 'Loading photo...';
 
       const rawUrl = (m && m.photo_url) ? String(m.photo_url).trim() : '';
 
       // 1. No photo recorded in database
       if (!rawUrl) {
-        photoEl.src = placeholderSvg;
         photoEl.title = 'No photo on file in Tajneed';
         return;
       }
 
       // 2. Fast synchronous memory cache hit
       if (m.id && photoMemoryCache.has(m.id)) {
+        if (currentRenderedPhotoMemberId !== targetMemberId || renderSeq !== currentPhotoRenderSeq) return;
         photoEl.src = photoMemoryCache.get(m.id);
         photoEl.title = isLive ? 'Member Photo (Live / Cached)' : 'Member Photo (Offline Cached)';
         return;
@@ -852,6 +906,7 @@
 
       // 3. Direct base64 Data URI on record
       if (rawUrl.startsWith('data:image/')) {
+        if (currentRenderedPhotoMemberId !== targetMemberId || renderSeq !== currentPhotoRenderSeq) return;
         photoEl.src = rawUrl;
         photoEl.title = 'Member Photo';
         if (m.id) saveOfflinePhoto(m.id, rawUrl);
@@ -860,6 +915,7 @@
 
       // 4. Check IndexedDB offline photo store
       const offlineData = await getOfflinePhoto(m.id);
+      if (currentRenderedPhotoMemberId !== targetMemberId || renderSeq !== currentPhotoRenderSeq) return;
       if (offlineData) {
         photoEl.src = offlineData;
         photoEl.title = isLive ? 'Member Photo (Live / Cached)' : 'Member Photo (Offline Cached)';
@@ -878,19 +934,27 @@
 
         photoEl.title = 'Loading photo...';
         photoEl.onerror = () => {
+          if (currentRenderedPhotoMemberId !== targetMemberId || renderSeq !== currentPhotoRenderSeq) return;
+          photoEl.onload = null;
+          photoEl.onerror = null;
           photoEl.src = placeholderSvg;
           photoEl.title = 'Remote photo unavailable';
         };
         photoEl.onload = () => {
+          if (currentRenderedPhotoMemberId !== targetMemberId || renderSeq !== currentPhotoRenderSeq) return;
+          photoEl.onload = null;
+          photoEl.onerror = null;
           photoEl.title = 'Member Photo (Online)';
           if (m.id && !photoMemoryCache.has(m.id)) {
             fetch(fastUrl, { mode: 'cors' })
               .then(r => r.ok ? r.blob() : null)
               .then(b => {
-                if (!b) return;
+                if (!b || currentRenderedPhotoMemberId !== targetMemberId || renderSeq !== currentPhotoRenderSeq) return;
                 const fr = new FileReader();
                 fr.onloadend = () => {
-                  if (fr.result) saveOfflinePhoto(m.id, fr.result);
+                  if (fr.result && currentRenderedPhotoMemberId === targetMemberId && renderSeq === currentPhotoRenderSeq) {
+                    saveOfflinePhoto(m.id, fr.result);
+                  }
                 };
                 fr.readAsDataURL(b);
               })
@@ -1000,6 +1064,37 @@
             syncMetaCache = meta;
             resolve(true);
           };
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+        } catch (err) {
+          reject(err);
+        }
+      });
+    }
+
+    async function saveSyncMetaToIDB(meta) {
+      syncMetaCache = meta;
+      const db = await openDirectoryDB();
+      if (!db) {
+        try {
+          localStorage.setItem(CACHE_KEY_SYNC_META_LEGACY, JSON.stringify(meta));
+        } catch (e) {}
+        return;
+      }
+
+      return new Promise((resolve, reject) => {
+        try {
+          const tx = db.transaction(IDB_STORE_META, "readwrite");
+          const metaStore = tx.objectStore(IDB_STORE_META);
+          metaStore.put({
+            key: "sync_meta",
+            count: meta.count || 0,
+            membersWithPhotosCount: meta.membersWithPhotosCount || 0,
+            photosCount: meta.photosCount || 0,
+            syncedAt: meta.syncedAt || Date.now()
+          });
+
+          tx.oncomplete = () => resolve(true);
           tx.onerror = () => reject(tx.error);
           tx.onabort = () => reject(tx.error);
         } catch (err) {
@@ -1141,15 +1236,81 @@
       return 'UNSUPPORTED';
     }
 
-    function isOfficeBearer(m) {
-      if (!m) return false;
+    function getCleanOfficeTitle(m) {
+      if (!m) return '';
       const rawDept = (m.department || '').trim();
-      if (rawDept && rawDept !== 'Select Office' && rawDept !== '-') return true;
-      const rawPos = (m.position || '').trim().toLowerCase();
-      if (rawPos && rawPos !== 'missionary' && rawPos !== 'regular member' && rawPos !== '-') {
-        return true;
+      if (rawDept && rawDept !== 'Select Office' && rawDept !== '-') {
+        return rawDept;
       }
-      return false;
+      const rawPos = (m.position || '').trim();
+      const lowerPos = rawPos.toLowerCase();
+      if (rawPos && lowerPos !== 'missionary' && lowerPos !== 'regular member' && lowerPos !== '-') {
+        return rawPos;
+      }
+      return '';
+    }
+
+    function isOfficeBearer(m) {
+      return Boolean(getCleanOfficeTitle(m));
+    }
+
+    // Strict MKA Office-Bearer Card Eligibility (Khuddam & Atfal males only; female & Ansar prohibited)
+    function checkOfficeBearerEligibility(m) {
+      if (!m) return { ok: false, reason: 'NO_RECORD', error: 'No member record provided.' };
+
+      const officeTitle = getCleanOfficeTitle(m);
+      if (!officeTitle) {
+        return {
+          ok: false,
+          reason: 'NO_ACTIVE_OFFICE',
+          error: 'Member record does not currently hold an active office or responsibility.'
+        };
+      }
+
+      const rawGender = (m.gender || '').trim().toLowerCase();
+      if (!rawGender) {
+        return {
+          ok: false,
+          reason: 'MISSING_GENDER',
+          error: 'Gender is missing on member record; office-bearer eligibility cannot be confirmed.'
+        };
+      }
+      if (rawGender === 'female' || rawGender === 'f' || rawGender.startsWith('fem')) {
+        return {
+          ok: false,
+          reason: 'FEMALE_INELIGIBLE',
+          error: 'Member is female; MKA office-bearer cards are restricted to eligible Khuddam and Atfal.'
+        };
+      }
+      if (rawGender !== 'male' && rawGender !== 'm') {
+        return {
+          ok: false,
+          reason: 'UNRECOGNIZED_GENDER',
+          error: `Unrecognized gender (${m.gender}); office-bearer eligibility cannot be confirmed.`
+        };
+      }
+
+      const ageGroup = (m.age_group || '').toLowerCase();
+      const orgId = (m.organization_id || '').toLowerCase();
+      const orgType = (m.calculated_org_type || '').toLowerCase();
+      if (ageGroup.includes('ansar') || orgId.includes('ansar') || orgType.includes('ansar')) {
+        return {
+          ok: false,
+          reason: 'ANSAR_INELIGIBLE',
+          error: 'Member belongs to Ansarullah; Ansar are not eligible for MKA office-bearer cards.'
+        };
+      }
+
+      const cat = getAssignedCategory(m);
+      if (cat !== 'ATFAL' && cat !== 'KHUDDAM') {
+        return {
+          ok: false,
+          reason: 'UNSUPPORTED_CATEGORY',
+          error: 'Member category is outside MKA (Khuddam & Atfal) scope.'
+        };
+      }
+
+      return { ok: true, officeTitle };
     }
 
     // UI SAFE DOM ACCESSORS
@@ -1312,9 +1473,13 @@
 
       updateSyncDisplay();
 
-      const memberUid = extractMemberIdFromQr(getParam('uid') || getParam('id'));
+      const rawUid = getParam('uid') || getParam('id');
+      const rawType = getParam('type');
+      const parsed = parseQrPayload(rawUid);
+      const memberUid = parsed.uid;
+      const cardType = rawType !== null ? normalizeCardType(rawType) : parsed.type;
       if (memberUid) {
-        loadMemberRecord(memberUid);
+        loadMemberRecord(memberUid, cardType);
       } else {
         startScanner();
       }
@@ -1487,10 +1652,12 @@
           await Promise.all(batch.map(async (m) => {
             try {
               if (m.photo_url.startsWith('data:image/')) {
-                await saveOfflinePhoto(m.id, m.photo_url);
-                existingPhotoKeys.add(m.id);
-                cachedPhotosCount++;
-                doneCount++;
+                const saved = await saveOfflinePhoto(m.id, m.photo_url, true);
+                if (saved) {
+                  existingPhotoKeys.add(m.id);
+                  cachedPhotosCount++;
+                  doneCount++;
+                }
                 return;
               }
 
@@ -1509,10 +1676,12 @@
               });
 
               if (dataUrl) {
-                await saveOfflinePhoto(m.id, dataUrl);
-                existingPhotoKeys.add(m.id);
-                cachedPhotosCount++;
-                doneCount++;
+                const saved = await saveOfflinePhoto(m.id, dataUrl, true);
+                if (saved) {
+                  existingPhotoKeys.add(m.id);
+                  cachedPhotosCount++;
+                  doneCount++;
+                }
               }
             } catch (err) {
               if (err && (err.name === 'QuotaExceededError' || err.message?.includes('quota'))) {
@@ -1526,16 +1695,16 @@
           if (btn) {
             btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Photos (${cachedPhotosCount}/${totalWithPhotos})...`;
           }
-          if (doneCount % 16 === 0 || i + concurrency >= missingPhotos.length) {
+          if ((doneCount > 0 && doneCount % 16 === 0) || i + concurrency >= missingPhotos.length) {
             syncMeta.photosCount = cachedPhotosCount;
-            await saveDirectoryToIDB(cleanMembers, syncMeta);
+            await saveSyncMetaToIDB(syncMeta);
             updateSyncDisplay(syncMeta);
           }
         }
 
         // Finalize Phase 2 metadata
         syncMeta.photosCount = cachedPhotosCount;
-        await saveDirectoryToIDB(cleanMembers, syncMeta);
+        await saveSyncMetaToIDB(syncMeta);
         updateSyncDisplay(syncMeta);
 
         if (!navigator.onLine) {
@@ -1558,17 +1727,32 @@
     }
 
     // QR PARSING & SCANNER CONTROLS
-    function extractMemberIdFromQr(decodedText) {
-      if (!decodedText || typeof decodedText !== 'string') return null;
+    let currentScanCardType = 'regular';
+
+    function normalizeCardType(rawType) {
+      if (!rawType || typeof rawType !== 'string') return 'regular';
+      const clean = rawType.trim().toLowerCase();
+      return clean === 'office' ? 'office' : 'regular';
+    }
+
+    function parseQrPayload(decodedText) {
+      if (!decodedText || typeof decodedText !== 'string') {
+        return { uid: null, type: 'regular' };
+      }
       const trimmed = decodedText.trim();
-      if (!trimmed) return null;
+      if (!trimmed) {
+        return { uid: null, type: 'regular' };
+      }
 
       // 1. JSON payload check
       if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
         try {
           const obj = JSON.parse(trimmed);
           if (obj && (obj.uid || obj.id || obj.member_id)) {
-            return String(obj.uid || obj.id || obj.member_id).trim();
+            return {
+              uid: String(obj.uid || obj.id || obj.member_id).trim(),
+              type: normalizeCardType(obj.type || obj.card_type || obj.mode)
+            };
           }
         } catch (e) {}
       }
@@ -1576,33 +1760,64 @@
       // 2. Full URL parsing
       try {
         const urlObj = new URL(trimmed);
-        const param = urlObj.searchParams.get('uid') || urlObj.searchParams.get('id');
-        if (param) return param.trim();
+        let uid = urlObj.searchParams.get('uid') || urlObj.searchParams.get('id');
+        let rawType = urlObj.searchParams.get('type');
 
         if (urlObj.hash) {
-          const hashMatch = urlObj.hash.match(/[?&#](?:uid|id)=([^&]+)/i);
-          if (hashMatch && hashMatch[1]) {
-            try {
-              return decodeURIComponent(hashMatch[1]).trim();
-            } catch (e) {
-              return hashMatch[1].trim();
+          if (!uid) {
+            const hashMatch = urlObj.hash.match(/[?&#](?:uid|id)=([^&#]+)/i);
+            if (hashMatch && hashMatch[1]) {
+              try {
+                uid = decodeURIComponent(hashMatch[1]).trim();
+              } catch (e) {
+                uid = hashMatch[1].trim();
+              }
+            }
+          }
+          if (!rawType) {
+            const hashTypeMatch = urlObj.hash.match(/[?&#]type=([^&#]+)/i);
+            if (hashTypeMatch && hashTypeMatch[1]) {
+              try {
+                rawType = decodeURIComponent(hashTypeMatch[1]).trim();
+              } catch (e) {
+                rawType = hashTypeMatch[1].trim();
+              }
             }
           }
         }
+
+        if (uid) {
+          return {
+            uid: uid.trim(),
+            type: normalizeCardType(rawType)
+          };
+        }
       } catch (e) {
         // Fallback: relative URL or query string
-        const match = trimmed.match(/[?&](?:uid|id)=([^&]+)/i);
+        const match = trimmed.match(/(?:[?&#]|^)(?:uid|id)=([^&#]+)/i);
+        const typeMatch = trimmed.match(/(?:[?&#]|^)type=([^&#]+)/i);
         if (match && match[1]) {
+          let uid = match[1].trim();
           try {
-            return decodeURIComponent(match[1]).trim();
-          } catch (err) {
-            return match[1].trim();
-          }
+            uid = decodeURIComponent(uid).trim();
+          } catch (err) {}
+          let rawType = (typeMatch && typeMatch[1]) ? typeMatch[1].trim() : '';
+          try {
+            rawType = decodeURIComponent(rawType).trim();
+          } catch (err) {}
+          return {
+            uid: uid,
+            type: normalizeCardType(rawType)
+          };
         }
       }
 
       // 3. Direct UUID or plain Member ID
-      return trimmed;
+      return { uid: trimmed, type: 'regular' };
+    }
+
+    function extractMemberIdFromQr(decodedText) {
+      return parseQrPayload(decodedText).uid;
     }
 
     function getParam(param) {
@@ -1643,23 +1858,36 @@
 
     async function onScanSuccess(decodedText) {
       await stopScanner();
-      const uid = extractMemberIdFromQr(decodedText);
+      const parsed = parseQrPayload(decodedText);
+      const uid = parsed.uid;
+      const cardType = parsed.type;
       if (!uid) {
         showErrorState('Invalid QR Code', 'The scanned QR code is empty or does not contain a valid member ID or URL.');
         return;
       }
-      const newUrl = window.location.pathname + '?uid=' + encodeURIComponent(uid);
+      const newUrl = window.location.pathname + '?uid=' + encodeURIComponent(uid) + '&type=' + encodeURIComponent(cardType);
       window.history.pushState({ path: newUrl }, '', newUrl);
 
-      await loadMemberRecord(uid);
+      await loadMemberRecord(uid, cardType);
     }
     // CACHE-FIRST LOOKUP & RESULT PRESENTATION
-    async function loadMemberRecord(rawInput) {
-      const cleanUid = extractMemberIdFromQr(rawInput);
+    async function loadMemberRecord(rawInput, explicitCardType) {
+      const parsed = parseQrPayload(rawInput);
+      const cleanUid = parsed.uid;
       if (!cleanUid) {
         showErrorState('Invalid QR Code', 'The scanned QR code is empty or does not contain a valid member ID.');
         return;
       }
+
+      let resolvedCardType = 'regular';
+      if (explicitCardType !== undefined && explicitCardType !== null) {
+        resolvedCardType = normalizeCardType(explicitCardType);
+      } else if (rawInput && typeof rawInput === 'string' && (/[?&#]type=/i.test(rawInput) || rawInput.trim().startsWith('{'))) {
+        resolvedCardType = parsed.type;
+      } else {
+        resolvedCardType = normalizeCardType(getParam('type'));
+      }
+      currentScanCardType = resolvedCardType;
 
       const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanUid);
 
@@ -1691,11 +1919,11 @@
 
       // If cached: RENDER IMMEDIATELY
       if (cached) {
-        renderMember(cached, false); // false = offline/cached badge
+        renderMember(cached, false, resolvedCardType); // false = offline/cached badge
 
         // Quiet background revalidation if online
         if (navigator.onLine && sb) {
-          revalidateMemberInBackground(cleanUid, isUuid);
+          revalidateMemberInBackground(cleanUid, isUuid, resolvedCardType);
         }
         return;
       }
@@ -1748,12 +1976,12 @@
       }
 
       // Render as live confirmed
-      renderMember(member, true);
+      renderMember(member, true, resolvedCardType);
 
       // Save to local cache so next scan is instant
       saveMemberToMemoryAndIDB(member);
     }
-    async function revalidateMemberInBackground(cleanUid, isUuid) {
+    async function revalidateMemberInBackground(cleanUid, isUuid, cardType) {
       if (!sb || !navigator.onLine) return;
       try {
         let query = sb.from('members')
@@ -1767,7 +1995,7 @@
         if (!error && data) {
           const currentIdEl = document.getElementById('mId');
           if (currentIdEl && (currentIdEl.textContent.trim() === (data.member_id || data.id))) {
-            renderMember(data, true);
+            renderMember(data, true, cardType !== undefined ? cardType : currentScanCardType);
           }
           saveMemberToMemoryAndIDB(data);
         }
@@ -1784,8 +2012,21 @@
       setElText('errMsg', message || 'An unexpected verification error occurred.');
       setElDisplay('errorState', 'block');
     }
+
+    function escapeHtml(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     // FULL OPERATIONAL MEMBER RECORD PRESENTATION
-    function renderMember(m, isLive) {
+    function renderMember(m, isLive, cardType) {
+      const effectiveCardType = normalizeCardType(cardType !== undefined ? cardType : currentScanCardType);
+      currentScanCardType = effectiveCardType;
+
       setElDisplay('loadingState', 'none');
       setElDisplay('errorState', 'none');
       setElDisplay('scannerBox', 'none');
@@ -1797,17 +2038,21 @@
       // Fast, resilient photo rendering
       displayMemberPhoto(m, isLive);
 
-      // Domain Engine Calculations
+      // Domain Engine & Card-Type Eligibility Calculations
       const category = getAssignedCategory(m);
-      const isOffice = isOfficeBearer(m);
-      const isQaid = isOffice && `${m.position || ''} ${m.department || ''}`.toLowerCase().includes('regional qaid');
+      const isOfficeCardScan = (effectiveCardType === 'office');
+      const officeEligibility = isOfficeCardScan ? checkOfficeBearerEligibility(m) : { ok: false };
+      const isValidOfficeCard = isOfficeCardScan && officeEligibility.ok;
+      const isInvalidOfficeCard = isOfficeCardScan && !officeEligibility.ok;
+
+      const isQaid = isValidOfficeCard && `${m.position || ''} ${m.department || ''}`.toLowerCase().includes('regional qaid');
       const birthYear = MKA_DomainEngine.parseBirthYear(m.dob);
       const issueYear = new Date().getFullYear();
 
-      const autoYear = MKA_DomainEngine.computeExpiryYear({
+      const autoYear = isInvalidOfficeCard ? null : MKA_DomainEngine.computeExpiryYear({
         birthYear,
         category,
-        isOffice,
+        isOffice: isValidOfficeCard,
         isRegionalQaid: isQaid,
         issueYear
       });
@@ -1843,12 +2088,18 @@
         statusEl.style.color = isStatusActive ? '#81c784' : '#f87171';
       }
 
-      // Responsibility
-      let office = category === 'ATFAL' ? 'Atfal Member' : 'Khuddam Member';
-      if (m.department && m.department !== 'Select Office' && m.department !== '-') {
-        office = m.department;
-      } else if (m.position && m.position !== '-' && m.position.toLowerCase() !== 'regular member') {
-        office = m.position;
+      // Responsibility (strictly separated by scanned card type)
+      const regularRoleLabel = category === 'ATFAL' ? 'Atfal Member' : (category === 'KHUDDAM' ? 'Khuddam Member' : 'Non-MKA Member');
+      let office = regularRoleLabel;
+      const officeEl = document.getElementById('mOffice');
+      if (isValidOfficeCard) {
+        office = officeEligibility.officeTitle;
+        if (officeEl) officeEl.style.color = '#ffffff';
+      } else if (isInvalidOfficeCard) {
+        office = `Not Valid as Office-Bearer Card (${officeEligibility.error}) — ${regularRoleLabel}`;
+        if (officeEl) officeEl.style.color = '#fde047';
+      } else {
+        if (officeEl) officeEl.style.color = '#ffffff';
       }
       setElText('mOffice', office);
 
@@ -1867,9 +2118,11 @@
 
       // Card Expiry: Honest representation without invented dates
       let expiryLabel = '—';
-      if (category === 'UNSUPPORTED') {
+      if (isInvalidOfficeCard) {
+        expiryLabel = 'INVALID OFFICE CARD (NOT AN ELIGIBLE OFFICE BEARER)';
+      } else if (category === 'UNSUPPORTED') {
         expiryLabel = 'N/A (EXCLUDED FROM ISSUANCE)';
-      } else if (!birthYear && !isOffice) {
+      } else if (!birthYear && !isValidOfficeCard) {
         expiryLabel = 'MISSING DOB (CANNOT CALCULATE)';
       } else if (autoYear) {
         expiryLabel = `${autoYear}${isExpired ? ' (EXPIRED)' : ''}`;
@@ -1877,19 +2130,21 @@
       const expEl = document.getElementById('mExpiry');
       if (expEl) {
         expEl.textContent = expiryLabel;
-        expEl.style.color = (isExpired || expiryLabel.includes('MISSING')) ? '#f87171' : '#ffffff';
+        expEl.style.color = (isExpired || isInvalidOfficeCard || expiryLabel.includes('MISSING')) ? '#f87171' : '#ffffff';
       }
 
       // Custom Verified Badge (Minimal, No Pill Tag)
       const badgeEl = document.getElementById('mBadge');
       if (badgeEl) {
         badgeEl.className = 'verified-badge';
-        if (category === 'UNSUPPORTED') {
+        if (isInvalidOfficeCard) {
+          badgeEl.innerHTML = '<span class="custom-badge-icon warning"><i class="fas fa-exclamation-triangle"></i></span> <span class="verified-label warning">Not Valid as Office-Bearer Card</span>';
+        } else if (category === 'UNSUPPORTED') {
           badgeEl.innerHTML = '<span class="custom-badge-icon warning"><i class="fas fa-exclamation"></i></span> <span class="verified-label warning">Non-MKA Scope</span>';
-        } else if (!birthYear && !isOffice) {
+        } else if (!birthYear && !isValidOfficeCard) {
           badgeEl.innerHTML = '<span class="custom-badge-icon warning"><i class="fas fa-exclamation"></i></span> <span class="verified-label warning">Incomplete Record</span>';
         } else if (!isStatusActive) {
-          badgeEl.innerHTML = `<span class="custom-badge-icon danger"><i class="fas fa-user-slash"></i></span> <span class="verified-label danger">Inactive (${rawStatus})</span>`;
+          badgeEl.innerHTML = `<span class="custom-badge-icon danger"><i class="fas fa-user-slash"></i></span> <span class="verified-label danger">Inactive (${escapeHtml(rawStatus)})</span>`;
         } else if (isExpired) {
           badgeEl.innerHTML = `<span class="custom-badge-icon danger"><i class="fas fa-times"></i></span> <span class="verified-label danger">Card Expired</span>`;
         } else if (isLive) {
